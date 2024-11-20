@@ -1,6 +1,6 @@
 import { createByModelName } from '@microsoft/tiktokenizer';
 
-interface IDoc {
+export interface IDoc {
   text: string;
   metadata: {
     tokens: number;
@@ -17,20 +17,18 @@ interface Headers {
 export class TextSplitter {
   private tokenizer?: Awaited<ReturnType<typeof createByModelName>>;
 
-  private readonly MODEL_NAME: string;
   private readonly SPECIAL_TOKENS = new Map<string, number>([
     ['<|im_start|>', 100264],
     ['<|im_end|>', 100265],
     ['<|im_sep|>', 100266],
   ]);
 
-  constructor(modelName: string = 'gpt-4o') {
-    this.MODEL_NAME = modelName;
-  }
+  constructor(private modelName: string = 'gpt-4') {}
 
-  private async initializeTokenizer(): Promise<void> {
-    if (!this.tokenizer) {
-      this.tokenizer = await createByModelName(this.MODEL_NAME, this.SPECIAL_TOKENS);
+  private async initializeTokenizer(model?: string): Promise<void> {
+    if (!this.tokenizer || model !== this.modelName) {
+      this.modelName = model || this.modelName;
+      this.tokenizer = await createByModelName(this.modelName, this.SPECIAL_TOKENS);
     }
   }
 
@@ -203,5 +201,23 @@ export class TextSplitter {
       });
 
     return { content, urls, images };
+  }
+
+  async document(text: string, model?: string, additionalMetadata?: Record<string, any>): Promise<IDoc> {
+    await this.initializeTokenizer(model);
+    const tokens = this.countTokens(text);
+    const headers = this.extractHeaders(text);
+    const { content, urls, images } = this.extractUrlsAndImages(text);
+  
+    return {
+      text: content,
+      metadata: {
+        tokens,
+        headers,
+        urls,
+        images,
+        ...additionalMetadata, 
+      },
+    };
   }
 }
