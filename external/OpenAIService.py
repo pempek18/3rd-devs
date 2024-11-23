@@ -1,10 +1,12 @@
 import os
 from openai import OpenAI
-from typing import Optional, List, Dict, Any, AsyncIterable, Union, Tuple
+from typing import Optional, List, Dict, Any, AsyncIterable, Union, Tuple, Literal
 from elevenlabs import Client as ElevenLabsClient
 import groq
 from microsoft.tiktokenizer import create_by_model_name
 import json
+import aiohttp
+import math
 
 class OpenAIService:
     IM_START = "<|im_start|>"
@@ -16,6 +18,7 @@ class OpenAIService:
         self.elevenlabs = ElevenLabsClient(api_key=os.getenv('ELEVENLABS_API_KEY'))
         self.groq = groq.Groq(api_key=os.getenv('GROQ_API_KEY'))
         self.tokenizers = {}
+        self.JINA_API_KEY = os.getenv('JINA_API_KEY')
 
     async def get_tokenizer(self, model_name: str):
         if model_name not in self.tokenizers:
@@ -43,21 +46,25 @@ class OpenAIService:
                         messages: List[Dict[str, str]], 
                         model: str = "gpt-4o",
                         stream: bool = False,
-                        temperature: float = 0,
                         json_mode: bool = False,
                         max_tokens: int = 4096) -> Union[Dict[str, Any], AsyncIterable]:
         try:
-            response = await self.openai.chat.completions.create(
-                messages=messages,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=stream,
-                response_format={"type": "json_object"} if json_mode else None
-            )
-            return response
-        except Exception as e:
-            print("Error in OpenAI completion:", str(e))
+            params = {
+                "messages": messages,
+                "model": model,
+            }
+            
+            if model not in ['o1-mini', 'o1-preview']:
+                params.update({
+                    "stream": stream,
+                    "max_tokens": max_tokens,
+                    "response_format": {"type": "json_object"} if json_mode else {"type": "text"}
+                })
+
+            chat_completion = await self.openai.chat.completions.create(**params)
+            return chat_completion
+        except Exception as error:
+            print("Error in OpenAI completion:", str(error))
             raise
 
     def parse_json_response(self, response) -> Union[Dict[str, Any], Dict[str, Union[str, bool]]]:
@@ -79,6 +86,33 @@ class OpenAIService:
             return response.data[0].embedding
         except Exception as e:
             print("Error creating embedding:", str(e))
+            raise
+
+    async def create_jina_embedding(self, text: str) -> List[float]:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    'https://api.jina.ai/v1/embeddings',
+                    headers={
+                        'Content-Type': 'application/json',
+                        'Authorization': f'Bearer {self.JINA_API_KEY}'
+                    },
+                    json={
+                        'model': 'jina-embeddings-v3',
+                        'task': 'text-matching',
+                        'dimensions': 1024,
+                        'late_chunking': False,
+                        'embedding_type': 'float',
+                        'input': [text]
+                    }
+                ) as response:
+                    if not response.ok:
+                        raise ValueError(f"HTTP error! status: {response.status}")
+                    
+                    data = await response.json()
+                    return data['data'][0]['embedding']
+        except Exception as error:
+            print("Error creating Jina embedding:", str(error))
             raise
 
     async def speak(self, text: str) -> bytes:
@@ -132,3 +166,42 @@ class OpenAIService:
         except Exception as e:
             print("Error in ElevenLabs speech generation:", str(e))
             raise 
+
+    def calculate_image_tokens(self, 
+                             width: int, 
+                             height: int, 
+                             detail: Literal['low', 'high']) -> int:
+        token_cost = 0
+
+        if detail == 'low':
+            token_cost += 85
+            return token_cost
+
+        MAX_DIMENSION = 2048
+        SCALE_SIZE = 768
+
+        # Resize to fit within MAX_DIMENSION x MAX_DIMENSION
+        if width > MAX_DIMENSION or height > MAX_DIMENSION:
+            aspect_ratio = width / height
+            if aspect_ratio > 1:
+                width = MAX_DIMENSION
+                height = round(MAX_DIMENSION / aspect_ratio)
+            else:
+                height = MAX_DIMENSION
+                width = round(MAX_DIMENSION * aspect_ratio)
+
+        # Scale the shortest side to SCALE_SIZE
+        if width >= height and height > SCALE_SIZE:
+            width = round((SCALE_SIZE / height) * width)
+            height = SCALE_SIZE
+        elif height > width and width > SCALE_SIZE:
+            height = round((SCALE_SIZE / width) * height)
+            width = SCALE_SIZE
+
+        # Calculate the number of 512px squares
+        num_squares = math.ceil(width / 512) * math.ceil(height / 512)
+
+        # Calculate the token cost
+        token_cost += (num_squares * 170) + 85
+
+        return token_cost

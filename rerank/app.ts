@@ -75,7 +75,7 @@ async function main() {
     console.log(`Author(s): ${authors.join(', ')}`);
     console.table(relevantResults.map((result, index) => ({
         'Author': result.payload?.author || '',
-        'Text': result.payload?.text?.slice(0, 45) + '...' || '',
+        'Text': (result.payload?.text as string)?.slice(0, 45) + '...' || '',
         'Score': result.score
     })));
 }
